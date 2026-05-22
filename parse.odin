@@ -324,6 +324,42 @@ destroy_compiled_flags :: proc(flags: [dynamic]Compiled_Flag) {
   delete(flags)
 }
 
+combine_command_decls :: proc(groups: ..[]Command_Decl) -> [dynamic]Command_Decl {
+  commands := make([dynamic]Command_Decl)
+  append_command_decls(&commands, ..groups)
+  return commands
+}
+
+append_command_decls :: proc(commands: ^[dynamic]Command_Decl, groups: ..[]Command_Decl) {
+  for group in groups {
+    for command in group {
+      append(commands, command)
+    }
+  }
+}
+
+destroy_command_decl_list :: proc(commands: [dynamic]Command_Decl) {
+  delete(commands)
+}
+
+combine_command_specs :: proc(groups: ..[]Command_Spec) -> [dynamic]Command_Spec {
+  commands := make([dynamic]Command_Spec)
+  append_command_specs(&commands, ..groups)
+  return commands
+}
+
+append_command_specs :: proc(commands: ^[dynamic]Command_Spec, groups: ..[]Command_Spec) {
+  for group in groups {
+    for command in group {
+      append(commands, command)
+    }
+  }
+}
+
+destroy_command_spec_list :: proc(commands: [dynamic]Command_Spec) {
+  delete(commands)
+}
+
 combine_flag_decls :: proc(groups: ..[]Flag_Decl) -> [dynamic]Flag_Decl {
   flags := make([dynamic]Flag_Decl)
   append_flag_decls(&flags, ..groups)

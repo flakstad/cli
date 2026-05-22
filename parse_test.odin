@@ -433,6 +433,42 @@ test_combine_flag_decls_appends_reusable_groups :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_combine_command_decls_appends_reusable_groups :: proc(t: ^testing.T) {
+  item_patterns := [?]string{"items"}
+  user_patterns := [?]string{"users"}
+  item_commands := [?]Command_Decl{
+    {patterns = item_patterns[:], id = "items", doc = "Item commands"},
+  }
+  user_commands := [?]Command_Decl{
+    {patterns = user_patterns[:], id = "users", doc = "User commands"},
+  }
+
+  commands := combine_command_decls(item_commands[:], user_commands[:])
+  defer destroy_command_decl_list(commands)
+
+  testing.expect_value(t, len(commands), 2)
+  testing.expect_value(t, commands[0].id, "items")
+  testing.expect_value(t, commands[1].id, "users")
+}
+
+@(test)
+test_combine_command_specs_appends_reusable_groups :: proc(t: ^testing.T) {
+  item_commands := [?]Command_Spec{
+    {path = "items", label = "items"},
+  }
+  user_commands := [?]Command_Spec{
+    {path = "users", label = "users"},
+  }
+
+  commands := combine_command_specs(item_commands[:], user_commands[:])
+  defer destroy_command_spec_list(commands)
+
+  testing.expect_value(t, len(commands), 2)
+  testing.expect_value(t, commands[0].path, "items")
+  testing.expect_value(t, commands[1].path, "users")
+}
+
+@(test)
 test_parse_flags_support_optional_values_repeated_values_and_defaults :: proc(t: ^testing.T) {
   scan_names := [?]string{"--with-scan"}
   header_names := [?]string{"--header"}
