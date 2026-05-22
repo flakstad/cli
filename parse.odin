@@ -232,12 +232,7 @@ compile_cli_decls :: proc(commands: []Command_Decl, flags: []Flag_Decl) -> Compi
 destroy_compiled_cli :: proc(compiled: Compiled_CLI) {
   for command in compiled.commands {
     for pattern in command.patterns {
-      delete(pattern.source)
-      for token in pattern.tokens {
-	delete(token.text)
-	destroy_string_words(token.choices)
-      }
-      delete(pattern.tokens)
+      destroy_command_pattern(pattern)
     }
     delete(command.patterns)
     destroy_compiled_flags(command.flags)
@@ -339,6 +334,50 @@ append_command_decls :: proc(commands: ^[dynamic]Command_Decl, groups: ..[]Comma
 }
 
 destroy_command_decl_list :: proc(commands: [dynamic]Command_Decl) {
+  delete(commands)
+}
+
+prefix_command_decls :: proc(prefix: string, source: []Command_Decl) -> [dynamic]Command_Decl {
+  commands := make([dynamic]Command_Decl)
+  append_prefixed_command_decls(&commands, prefix, source)
+  return commands
+}
+
+append_prefixed_command_decls :: proc(commands: ^[dynamic]Command_Decl, prefix: string, source: []Command_Decl) {
+  clean_prefix := strings.trim_space(prefix)
+  for command in source {
+    patterns := make([dynamic]string)
+    for pattern in command.patterns {
+      clean_pattern := strings.trim_space(pattern)
+      if clean_prefix == "" {
+	append(&patterns, strings.clone(clean_pattern))
+      } else if clean_pattern == "" {
+	append(&patterns, strings.clone(clean_prefix))
+      } else {
+	append(&patterns, fmt.aprintf("%s %s", clean_prefix, clean_pattern))
+      }
+    }
+    append(commands, Command_Decl{
+      patterns = patterns[:],
+      id = command.id,
+      label = command.label,
+      shape = command.shape,
+      doc = command.doc,
+      help = command.help,
+      flags = command.flags,
+      help_only = command.help_only,
+      allow_unknown_flags = command.allow_unknown_flags,
+    })
+  }
+}
+
+destroy_prefixed_command_decl_list :: proc(commands: [dynamic]Command_Decl) {
+  for command in commands {
+    for pattern in command.patterns {
+      delete(pattern)
+    }
+    delete(command.patterns)
+  }
   delete(commands)
 }
 
@@ -879,6 +918,56 @@ split_passthrough_args :: proc(args: []string) -> ([]string, []string) {
   return args, nil
 }
 
+args_without_matched_command :: proc(args: []string, match: Match_Result, flags: []Flag_Decl) -> [dynamic]string {
+  compiled_flags := compile_flag_decls(flags)
+  defer destroy_compiled_flags(compiled_flags)
+  return args_without_matched_command_with_compiled_flags(args, match, compiled_flags[:])
+}
+
+args_without_matched_command_with_compiled_flags :: proc(args: []string, match: Match_Result, flags: []Compiled_Flag) -> [dynamic]string {
+  pattern := compile_command_pattern(match.path)
+  defer destroy_command_pattern(pattern)
+
+  result := make([dynamic]string, 0, max(0, len(args) - match.args_consumed))
+  token_idx := 0
+
+  for i := 0; i < len(args); i += 1 {
+    arg := args[i]
+    if is_option(arg) {
+      append(&result, arg)
+      if compiled_flag_consumes_next_arg_in(args, i, flags, nil) {
+	i += 1
+	if i < len(args) {
+	  append(&result, args[i])
+	}
+      }
+      continue
+    }
+
+    if token_idx < len(pattern.tokens) {
+      token := pattern.tokens[token_idx]
+      switch token.kind {
+      case .Literal:
+	if token.text == arg {
+	  token_idx += 1
+	  continue
+	}
+      case .One_Of:
+	if compiled_token_choice_matches(token, arg) {
+	  token_idx += 1
+	  continue
+	}
+      case .Positional:
+	token_idx += 1
+      case .Variadic_Positional:
+      }
+    }
+    append(&result, arg)
+  }
+
+  return result
+}
+
 option_name :: proc(arg: string) -> string {
   if idx := strings.index(arg, "="); idx >= 0 {
     return arg[:idx]
@@ -922,14 +1011,15 @@ Named_Value :: struct {
 }
 
 Match_Result :: struct {
-  ok:            bool,
-  spec_index:    int,
-  id:            string,
-  path:          string,
-  label:         string,
-  shape:         string,
-  args_consumed: int,
-  positionals:   [dynamic]Named_Value,
+  ok:                  bool,
+  spec_index:          int,
+  id:                  string,
+  path:                string,
+  label:               string,
+  shape:               string,
+  args_consumed:       int,
+  allow_unknown_flags: bool,
+  positionals:         [dynamic]Named_Value,
 }
 
 destroy_match_result :: proc(result: Match_Result) {
@@ -1052,6 +1142,7 @@ match_result_from :: proc(spec: Command_Spec, spec_idx: int, path: string, consu
     label = strings.clone(spec.label),
     shape = strings.clone(spec.shape),
     args_consumed = consumed,
+    allow_unknown_flags = spec.allow_unknown_flags,
     positionals = positionals,
   }
 }
@@ -1069,23 +1160,42 @@ match_result_from_compiled :: proc(command: Compiled_Command, path: string, cons
     label = strings.clone(label),
     shape = strings.clone(shape),
     args_consumed = consumed,
+    allow_unknown_flags = command.allow_unknown_flags,
     positionals = positionals,
   }
 }
 
 append_compiled_pattern :: proc(patterns: ^[dynamic]Command_Pattern, pattern: string) {
+  compiled := compile_command_pattern(pattern)
+  if compiled.source == "" {
+    destroy_command_pattern(compiled)
+    return
+  }
+  append(patterns, compiled)
+}
+
+compile_command_pattern :: proc(pattern: string) -> Command_Pattern {
   clean := strings.trim_space(pattern)
-  if clean == "" do return
-  tokens := strings.fields(clean)
-  defer delete(tokens)
   compiled := Command_Pattern{
     source = strings.clone(clean),
     tokens = make([dynamic]Command_Token),
   }
+  if clean == "" do return compiled
+  tokens := strings.fields(clean)
+  defer delete(tokens)
   for token in tokens {
     append(&compiled.tokens, compile_command_token(token))
   }
-  append(patterns, compiled)
+  return compiled
+}
+
+destroy_command_pattern :: proc(pattern: Command_Pattern) {
+  delete(pattern.source)
+  for token in pattern.tokens {
+    delete(token.text)
+    destroy_string_words(token.choices)
+  }
+  delete(pattern.tokens)
 }
 
 compile_command_token :: proc(token: string) -> Command_Token {

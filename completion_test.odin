@@ -86,12 +86,53 @@ test_completion_words_for_compiled_prefix_with_flags_includes_applicable_flags :
   show := completion_words_for_compiled_prefix_with_flags(compiled, "items show", nil)
   defer delete(show)
   testing.expect(t, strings.contains(show, "--verbose"))
-  testing.expect(t, strings.contains(show, "--format"))
+	testing.expect(t, strings.contains(show, "--format"))
+}
+
+@(test)
+test_completion_words_for_compiled_partial_prefix_filters_last_token :: proc(t: ^testing.T) {
+	specs := [?]Command_Spec{
+		{path = "items list", label = "items.list", shape = "items.list"},
+		{path = "items load", label = "items.load", shape = "items.load"},
+		{path = "items show <item-id>", label = "items.show", shape = "items.show"},
+		{path = "status", label = "status", shape = "status"},
+	}
+	compiled := compile_cli(specs[:], nil)
+	defer destroy_compiled_cli(compiled)
+
+	root := completion_words_for_compiled_partial_prefix(compiled, "i", nil)
+	defer delete(root)
+	items := completion_words_for_compiled_partial_prefix(compiled, "items l", nil)
+	defer delete(items)
+
+	testing.expect_value(t, root, "items")
+	testing.expect_value(t, items, "list load")
+}
+
+@(test)
+test_completion_words_for_compiled_partial_prefix_with_flags_filters_flags :: proc(t: ^testing.T) {
+	format_names := [?]string{"--format"}
+	follow_names := [?]string{"--follow"}
+	specs := [?]Command_Decl{
+		{patterns = []string{"items show"}, id = "items.show"},
+	}
+	flags := [?]Flag_Decl{
+		{names = format_names[:], mode = .Required},
+		{names = follow_names[:], mode = .None},
+	}
+	compiled := compile_cli_decls(specs[:], flags[:])
+	defer destroy_compiled_cli(compiled)
+
+	words := completion_words_for_compiled_partial_prefix_with_flags(compiled, "items show --fo", nil)
+	defer delete(words)
+
+	testing.expect(t, strings.contains(words, "--format"))
+	testing.expect(t, strings.contains(words, "--follow"))
 }
 
 @(test)
 test_render_completion_script_supports_bash :: proc(t: ^testing.T) {
-  script := render_completion_script("ro", "bash", "items status")
+	script := render_completion_script("ro", "bash", "items status")
   defer delete(script)
 
   testing.expect(t, strings.contains(script, "_ro_complete() {"))
@@ -120,9 +161,40 @@ test_render_completion_script_supports_fish :: proc(t: ^testing.T) {
 
 @(test)
 test_render_completion_script_sanitizes_function_name :: proc(t: ^testing.T) {
-  script := render_completion_script("my-tool", "bash", "run")
-  defer delete(script)
+	script := render_completion_script("my-tool", "bash", "run")
+	defer delete(script)
 
-  testing.expect(t, strings.contains(script, "_my_tool_complete() {"))
-  testing.expect(t, strings.contains(script, "complete -F _my_tool_complete my-tool"))
+	testing.expect(t, strings.contains(script, "_my_tool_complete() {"))
+	testing.expect(t, strings.contains(script, "complete -F _my_tool_complete my-tool"))
+}
+
+@(test)
+test_render_dynamic_completion_script_supports_bash :: proc(t: ^testing.T) {
+	script := render_dynamic_completion_script("ro", "bash", "ro completion words")
+	defer delete(script)
+
+	testing.expect(t, strings.contains(script, "_ro_complete() {"))
+	testing.expect(t, strings.contains(script, "ro completion words \"${COMP_WORDS[@]:1:$COMP_CWORD}\""))
+	testing.expect(t, strings.contains(script, "compgen -W \"$words\" -- \"$cur\""))
+	testing.expect(t, strings.contains(script, "complete -F _ro_complete ro"))
+}
+
+@(test)
+test_render_dynamic_completion_script_supports_zsh :: proc(t: ^testing.T) {
+	script := render_dynamic_completion_script("ro", "zsh", "ro completion words")
+	defer delete(script)
+
+	testing.expect(t, strings.contains(script, "#compdef ro"))
+	testing.expect(t, strings.contains(script, "raw=\"$(ro completion words ${words[2,CURRENT]} 2>/dev/null)\""))
+	testing.expect(t, strings.contains(script, "compadd -- $completions"))
+}
+
+@(test)
+test_render_dynamic_completion_script_supports_fish :: proc(t: ^testing.T) {
+	script := render_dynamic_completion_script("ro", "fish", "ro completion words")
+	defer delete(script)
+
+	testing.expect(t, strings.contains(script, "function _ro_complete"))
+	testing.expect(t, strings.contains(script, "ro completion words $tokens"))
+	testing.expect(t, strings.contains(script, "complete -c ro -f -a '(_ro_complete)'"))
 }

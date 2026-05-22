@@ -20,6 +20,7 @@ test_match_command_picks_longest_match :: proc(t: ^testing.T) {
   testing.expect_value(t, match.label, "item.select")
   testing.expect_value(t, match.shape, "item.select")
   testing.expect_value(t, match.args_consumed, 3)
+  testing.expect(t, !match.allow_unknown_flags)
 
   item_id, ok := positional(match, "item-id")
   defer delete(item_id)
@@ -452,6 +453,42 @@ test_combine_command_decls_appends_reusable_groups :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_prefix_command_decls_clones_patterns_with_prefix :: proc(t: ^testing.T) {
+  list_patterns := [?]string{"list", "ls"}
+  flags := [?]Flag_Decl{
+    {names = []string{"--format"}, mode = .Required},
+  }
+  source := [?]Command_Decl{
+    {patterns = list_patterns[:], id = "items.list", doc = "List items", flags = flags[:], allow_unknown_flags = true},
+  }
+
+  commands := prefix_command_decls("items", source[:])
+  defer destroy_prefixed_command_decl_list(commands)
+
+  testing.expect_value(t, len(commands), 1)
+  testing.expect_value(t, len(commands[0].patterns), 2)
+  testing.expect_value(t, commands[0].patterns[0], "items list")
+  testing.expect_value(t, commands[0].patterns[1], "items ls")
+  testing.expect_value(t, commands[0].id, "items.list")
+  testing.expect_value(t, commands[0].flags[0].names[0], "--format")
+  testing.expect(t, commands[0].allow_unknown_flags)
+}
+
+@(test)
+test_append_prefixed_command_decls_allows_empty_prefix :: proc(t: ^testing.T) {
+  patterns := [?]string{"items"}
+  source := [?]Command_Decl{
+    {patterns = patterns[:], id = "items"},
+  }
+  commands := make([dynamic]Command_Decl)
+  append_prefixed_command_decls(&commands, "", source[:])
+  defer destroy_prefixed_command_decl_list(commands)
+
+  testing.expect_value(t, len(commands), 1)
+  testing.expect_value(t, commands[0].patterns[0], "items")
+}
+
+@(test)
 test_combine_command_specs_appends_reusable_groups :: proc(t: ^testing.T) {
   item_commands := [?]Command_Spec{
     {path = "items", label = "items"},
@@ -699,6 +736,7 @@ test_parse_command_supports_command_specific_unknown_flags :: proc(t: ^testing.T
   defer destroy_command_parse_result(wrapper)
   testing.expect(t, wrapper.ok)
   testing.expect_value(t, wrapper.match.id, "repo.scc")
+  testing.expect(t, wrapper.match.allow_unknown_flags)
   testing.expect_value(t, len(wrapper.rest), 4)
 
   strict_args := [?]string{"repo", "stats", "--by-file"}
@@ -735,6 +773,51 @@ test_parse_command_validates_flags_for_matched_command :: proc(t: ^testing.T) {
   defer destroy_command_parse_result(bad_result)
   testing.expect(t, !bad_result.ok)
   testing.expect_value(t, bad_result.error, "unknown flag: --format")
+}
+
+@(test)
+test_args_without_matched_command_removes_command_literals_and_keeps_positionals :: proc(t: ^testing.T) {
+  patterns := [?]string{"items show <item-id>"}
+  format_names := [?]string{"--format"}
+  pretty_names := [?]string{"--pretty"}
+  flags := [?]Flag_Decl{
+    {names = format_names[:], mode = .Required},
+    {names = pretty_names[:], mode = .None},
+  }
+  commands := [?]Command_Decl{
+    {patterns = patterns[:], id = "items.show"},
+  }
+  args := [?]string{"--format", "json", "items", "--pretty", "show", "item-1"}
+
+  match := match_command_decls_with_flags(commands[:], args[:], flags[:])
+  defer destroy_match_result(match)
+  command_args := args_without_matched_command(args[:], match, flags[:])
+  defer delete(command_args)
+
+  testing.expect(t, match.ok)
+  testing.expect_value(t, len(command_args), 4)
+  testing.expect_value(t, command_args[0], "--format")
+  testing.expect_value(t, command_args[1], "json")
+  testing.expect_value(t, command_args[2], "--pretty")
+  testing.expect_value(t, command_args[3], "item-1")
+}
+
+@(test)
+test_args_without_matched_command_removes_one_of_choices :: proc(t: ^testing.T) {
+  patterns := [?]string{"completion bash|zsh|fish"}
+  commands := [?]Command_Decl{
+    {patterns = patterns[:], id = "completion"},
+  }
+  args := [?]string{"completion", "zsh", "--help"}
+
+  match := match_command_decls(commands[:], args[:])
+  defer destroy_match_result(match)
+  command_args := args_without_matched_command(args[:], match, nil)
+  defer delete(command_args)
+
+  testing.expect(t, match.ok)
+  testing.expect_value(t, len(command_args), 1)
+  testing.expect_value(t, command_args[0], "--help")
 }
 
 @(test)
