@@ -1,33 +1,37 @@
 package cli
 
 import "core:fmt"
+import "core:strconv"
 import "core:strings"
 
 Command_Spec :: struct {
-  path:      string,
-  aliases:   string,
-  label:     string,
-  shape:     string,
-  doc:       string,
-  help:      string,
-  flags:     []Flag_Spec,
-  help_only: bool,
+  path:                string,
+  aliases:             string,
+  label:               string,
+  shape:               string,
+  doc:                 string,
+  help:                string,
+  flags:               []Flag_Spec,
+  help_only:           bool,
+  allow_unknown_flags: bool,
 }
 
 Command_Decl :: struct {
-  patterns:  []string,
-  id:        string,
-  label:     string,
-  shape:     string,
-  doc:       string,
-  help:      string,
-  flags:     []Flag_Decl,
-  help_only: bool,
+  patterns:            []string,
+  id:                  string,
+  label:               string,
+  shape:               string,
+  doc:                 string,
+  help:                string,
+  flags:               []Flag_Decl,
+  help_only:           bool,
+  allow_unknown_flags: bool,
 }
 
 Command_Token_Kind :: enum {
   Literal,
   Positional,
+  Variadic_Positional,
   One_Of,
 }
 
@@ -43,15 +47,16 @@ Command_Pattern :: struct {
 }
 
 Compiled_Command :: struct {
-  spec_index: int,
-  id:         string,
-  label:      string,
-  shape:      string,
-  doc:        string,
-  help:       string,
-  flags:      [dynamic]Compiled_Flag,
-  help_only:  bool,
-  patterns:   [dynamic]Command_Pattern,
+  spec_index:          int,
+  id:                  string,
+  label:               string,
+  shape:               string,
+  doc:                 string,
+  help:                string,
+  flags:               [dynamic]Compiled_Flag,
+  help_only:           bool,
+  allow_unknown_flags: bool,
+  patterns:            [dynamic]Command_Pattern,
 }
 
 Compiled_CLI :: struct {
@@ -62,6 +67,7 @@ Compiled_CLI :: struct {
 Flag_Value_Mode :: enum {
   None,
   Required,
+  Optional,
 }
 
 Flag_Spec :: struct {
@@ -69,6 +75,7 @@ Flag_Spec :: struct {
   aliases:    string,
   value_name: string,
   mode:       Flag_Value_Mode,
+  choices:    []string,
   doc:        string,
   help:       string,
 }
@@ -77,6 +84,7 @@ Flag_Decl :: struct {
   names:      []string,
   value_name: string,
   mode:       Flag_Value_Mode,
+  choices:    []string,
   doc:        string,
   help:       string,
 }
@@ -86,6 +94,7 @@ Compiled_Flag :: struct {
   names:      [dynamic]string,
   value_name: string,
   mode:       Flag_Value_Mode,
+  choices:    [dynamic]string,
   doc:        string,
   help:       string,
 }
@@ -119,10 +128,11 @@ Parsed_Flag :: struct {
 }
 
 Flag_Parse_Result :: struct {
-  ok:    bool,
-  error: string,
-  flags: [dynamic]Parsed_Flag,
-  rest:  [dynamic]string,
+  ok:          bool,
+  error:       string,
+  flags:       [dynamic]Parsed_Flag,
+  rest:        [dynamic]string,
+  passthrough: [dynamic]string,
 }
 
 Command_Parse_Config :: struct {
@@ -138,11 +148,12 @@ Command_Decl_Parse_Config :: struct {
 }
 
 Command_Parse_Result :: struct {
-  ok:    bool,
-  error: string,
-  match: Match_Result,
-  flags: [dynamic]Parsed_Flag,
-  rest:  [dynamic]string,
+  ok:          bool,
+  error:       string,
+  match:       Match_Result,
+  flags:       [dynamic]Parsed_Flag,
+  rest:        [dynamic]string,
+  passthrough: [dynamic]string,
 }
 
 Compiled_Command_Parse_Config :: struct {
@@ -162,6 +173,7 @@ destroy_flag_parse_result :: proc(result: Flag_Parse_Result) {
   }
   destroy_parsed_flags(result.flags)
   destroy_string_words(result.rest)
+  destroy_string_words(result.passthrough)
 }
 
 compile_cli :: proc(commands: []Command_Spec, flags: []Flag_Spec) -> Compiled_CLI {
@@ -177,6 +189,7 @@ compile_cli :: proc(commands: []Command_Spec, flags: []Flag_Spec) -> Compiled_CL
       help = spec.help,
       flags = compile_flag_specs(spec.flags),
       help_only = spec.help_only,
+      allow_unknown_flags = spec.allow_unknown_flags,
     }
     command.patterns = make([dynamic]Command_Pattern)
     append_compiled_pattern(&command.patterns, spec.path)
@@ -205,6 +218,7 @@ compile_cli_decls :: proc(commands: []Command_Decl, flags: []Flag_Decl) -> Compi
       help = spec.help,
       flags = compile_flag_decls(spec.flags),
       help_only = spec.help_only,
+      allow_unknown_flags = spec.allow_unknown_flags,
       patterns = make([dynamic]Command_Pattern),
     }
     for pattern in spec.patterns {
@@ -239,6 +253,7 @@ destroy_command_parse_result :: proc(result: Command_Parse_Result) {
   destroy_match_result(result.match)
   destroy_parsed_flags(result.flags)
   destroy_string_words(result.rest)
+  destroy_string_words(result.passthrough)
 }
 
 compile_flag_specs :: proc(flags: []Flag_Spec) -> [dynamic]Compiled_Flag {
@@ -250,6 +265,7 @@ compile_flag_specs :: proc(flags: []Flag_Spec) -> [dynamic]Compiled_Flag {
       name = strings.clone(clean_name),
       value_name = strings.clone(flag.value_name),
       mode = flag.mode,
+      choices = clone_string_slice(flag.choices),
       doc = strings.clone(flag.doc),
       help = strings.clone(flag.help),
       names = make([dynamic]string),
@@ -283,6 +299,7 @@ compile_flag_decls :: proc(flags: []Flag_Decl) -> [dynamic]Compiled_Flag {
       name = strings.clone(name),
       value_name = strings.clone(flag.value_name),
       mode = flag.mode,
+      choices = clone_string_slice(flag.choices),
       doc = strings.clone(flag.doc),
       help = strings.clone(flag.help),
       names = make([dynamic]string),
@@ -301,8 +318,45 @@ destroy_compiled_flags :: proc(flags: [dynamic]Compiled_Flag) {
     delete(flag.value_name)
     delete(flag.doc)
     delete(flag.help)
+    destroy_string_words(flag.choices)
     destroy_string_words(flag.names)
   }
+  delete(flags)
+}
+
+combine_flag_decls :: proc(groups: ..[]Flag_Decl) -> [dynamic]Flag_Decl {
+  flags := make([dynamic]Flag_Decl)
+  append_flag_decls(&flags, ..groups)
+  return flags
+}
+
+append_flag_decls :: proc(flags: ^[dynamic]Flag_Decl, groups: ..[]Flag_Decl) {
+  for group in groups {
+    for flag in group {
+      append(flags, flag)
+    }
+  }
+}
+
+destroy_flag_decl_list :: proc(flags: [dynamic]Flag_Decl) {
+  delete(flags)
+}
+
+combine_flag_specs :: proc(groups: ..[]Flag_Spec) -> [dynamic]Flag_Spec {
+  flags := make([dynamic]Flag_Spec)
+  append_flag_specs(&flags, ..groups)
+  return flags
+}
+
+append_flag_specs :: proc(flags: ^[dynamic]Flag_Spec, groups: ..[]Flag_Spec) {
+  for group in groups {
+    for flag in group {
+      append(flags, flag)
+    }
+  }
+}
+
+destroy_flag_spec_list :: proc(flags: [dynamic]Flag_Spec) {
   delete(flags)
 }
 
@@ -534,7 +588,7 @@ parse_compiled_command_with_config :: proc(args: []string, compiled: Compiled_CL
   flag_result := parse_compiled_flags_with_config(args, Compiled_Flag_Parse_Config{
     flags = compiled.flags[:],
     extra_flags = compiled_command_flags(compiled, match.spec_index),
-    allow_unknown = config.allow_unknown_flags,
+    allow_unknown = config.allow_unknown_flags || compiled_command_allows_unknown_flags(compiled, match.spec_index),
   })
   if !flag_result.ok {
     result := Command_Parse_Result{
@@ -551,6 +605,7 @@ parse_compiled_command_with_config :: proc(args: []string, compiled: Compiled_CL
     match = match,
     flags = flag_result.flags,
     rest = flag_result.rest,
+    passthrough = flag_result.passthrough,
   }
   return result
 }
@@ -559,12 +614,13 @@ parse_compiled_flags_with_config :: proc(args: []string, config: Compiled_Flag_P
   result := Flag_Parse_Result{ok = true}
   result.flags = make([dynamic]Parsed_Flag)
   result.rest = make([dynamic]string)
+  result.passthrough = make([dynamic]string)
 
   i := 0
   for i < len(args) {
     arg := args[i]
     if arg == "--" {
-      append_remaining_args(&result.rest, args[i + 1:])
+      append_remaining_args(&result.passthrough, args[i + 1:])
       return result
     }
     if !is_option(arg) {
@@ -609,12 +665,26 @@ parse_compiled_flags_with_config :: proc(args: []string, config: Compiled_Flag_P
 	value = args[i]
 	has_value = true
       }
+    case .Optional:
+      if !has_value && i + 1 < len(args) && !is_option(args[i + 1]) {
+	i += 1
+	value = args[i]
+	has_value = true
+      }
     case .None:
       if has_value {
 	result.ok = false
 	result.error = strings.clone(fmt.tprintf("flag does not take a value: %s", flag.name))
 	return result
       }
+    }
+
+    if has_value && len(flag.choices) > 0 && !compiled_flag_value_allowed(flag, value) {
+      choices := join_choice_values(flag.choices[:])
+      defer delete(choices)
+      result.ok = false
+      result.error = strings.clone(fmt.tprintf("%s must be one of: %s", flag.name, choices))
+      return result
     }
 
     append(&result.flags, Parsed_Flag{
@@ -677,6 +747,26 @@ parsed_flag_value :: proc(result: Flag_Parse_Result, name: string) -> (string, b
   return strings.clone(""), false
 }
 
+parsed_flag_values :: proc(result: Flag_Parse_Result, name: string) -> [dynamic]string {
+  return parsed_flag_values_from_flags(result.flags[:], name)
+}
+
+parsed_flag_value_or :: proc(result: Flag_Parse_Result, name, default_value: string) -> string {
+  value, ok := parsed_flag_value(result, name)
+  if ok do return value
+  delete(value)
+  return strings.clone(default_value)
+}
+
+parsed_flag_int_value_or :: proc(result: Flag_Parse_Result, name: string, default_value: int) -> int {
+  value, ok := parsed_flag_value(result, name)
+  defer delete(value)
+  if !ok do return default_value
+  parsed, parsed_ok := strconv.parse_int(value, 10)
+  if !parsed_ok do return default_value
+  return parsed
+}
+
 parsed_command_flag_present :: proc(result: Command_Parse_Result, name: string) -> bool {
   for flag in result.flags {
     if flag.name == name do return true
@@ -691,6 +781,36 @@ parsed_command_flag_value :: proc(result: Command_Parse_Result, name: string) ->
     }
   }
   return strings.clone(""), false
+}
+
+parsed_command_flag_values :: proc(result: Command_Parse_Result, name: string) -> [dynamic]string {
+  return parsed_flag_values_from_flags(result.flags[:], name)
+}
+
+parsed_command_flag_value_or :: proc(result: Command_Parse_Result, name, default_value: string) -> string {
+  value, ok := parsed_command_flag_value(result, name)
+  if ok do return value
+  delete(value)
+  return strings.clone(default_value)
+}
+
+parsed_command_flag_int_value_or :: proc(result: Command_Parse_Result, name: string, default_value: int) -> int {
+  value, ok := parsed_command_flag_value(result, name)
+  defer delete(value)
+  if !ok do return default_value
+  parsed, parsed_ok := strconv.parse_int(value, 10)
+  if !parsed_ok do return default_value
+  return parsed
+}
+
+parsed_flag_values_from_flags :: proc(flags: []Parsed_Flag, name: string) -> [dynamic]string {
+  values := make([dynamic]string)
+  for flag in flags {
+    if flag.name == name && flag.has_value {
+      append(&values, strings.clone(flag.value))
+    }
+  }
+  return values
 }
 
 command_parse_match_error :: proc(rest: []string) -> string {
@@ -714,6 +834,15 @@ append_remaining_args :: proc(rest: ^[dynamic]string, args: []string) {
   }
 }
 
+split_passthrough_args :: proc(args: []string) -> ([]string, []string) {
+  for arg, i in args {
+    if arg == "--" {
+      return args[:i], args[i + 1:]
+    }
+  }
+  return args, nil
+}
+
 option_name :: proc(arg: string) -> string {
   if idx := strings.index(arg, "="); idx >= 0 {
     return arg[:idx]
@@ -734,6 +863,14 @@ append_unique_word :: proc(words: ^[dynamic]string, word: string) {
     if existing == word do return
   }
   append(words, strings.clone(word))
+}
+
+clone_string_slice :: proc(words: []string) -> [dynamic]string {
+  cloned := make([dynamic]string)
+  for word in words {
+    append(&cloned, strings.clone(word))
+  }
+  return cloned
 }
 
 destroy_string_words :: proc(words: [dynamic]string) {
@@ -918,9 +1055,16 @@ append_compiled_pattern :: proc(patterns: ^[dynamic]Command_Pattern, pattern: st
 compile_command_token :: proc(token: string) -> Command_Token {
   clean := strings.trim_space(token)
   if is_placeholder(clean) {
+    text := clean[1:len(clean) - 1]
+    if strings.has_suffix(text, "...") {
+      return Command_Token{
+	kind = .Variadic_Positional,
+	text = strings.clone(text[:len(text) - 3]),
+      }
+    }
     return Command_Token{
       kind = .Positional,
-      text = strings.clone(clean[1:len(clean) - 1]),
+      text = strings.clone(text),
     }
   }
   if strings.contains(clean, "|") {
@@ -955,12 +1099,26 @@ compiled_command_flags :: proc(compiled: Compiled_CLI, spec_index: int) -> []Com
   return nil
 }
 
+compiled_command_allows_unknown_flags :: proc(compiled: Compiled_CLI, spec_index: int) -> bool {
+  for command in compiled.commands {
+    if command.spec_index == spec_index do return command.allow_unknown_flags
+  }
+  return false
+}
+
 match_compiled_pattern :: proc(pattern: Command_Pattern, args: []string, flags, spec_flags: []Compiled_Flag) -> (bool, int, [dynamic]Named_Value) {
   positionals := make([dynamic]Named_Value)
   arg_idx := 0
   for token in pattern.tokens {
+    if token.kind == .Variadic_Positional {
+      for arg_idx < len(args) {
+	append(&positionals, Named_Value{name = strings.clone(token.text), value = strings.clone(args[arg_idx])})
+	arg_idx += 1
+      }
+      return true, arg_idx, positionals
+    }
     for arg_idx < len(args) && is_option(args[arg_idx]) {
-      if compiled_flag_takes_value_in(flags, spec_flags, args[arg_idx]) && !strings.contains(args[arg_idx], "=") && arg_idx + 1 < len(args) {
+      if compiled_flag_consumes_next_arg_in(args, arg_idx, flags, spec_flags) {
 	arg_idx += 2
       } else {
 	arg_idx += 1
@@ -975,6 +1133,7 @@ match_compiled_pattern :: proc(pattern: Command_Pattern, args: []string, flags, 
       if token.text != arg do return false, 0, positionals
     case .Positional:
       append(&positionals, Named_Value{name = strings.clone(token.text), value = strings.clone(arg)})
+    case .Variadic_Positional:
     case .One_Of:
       if !compiled_token_choice_matches(token, arg) do return false, 0, positionals
     }
@@ -1018,7 +1177,7 @@ compiled_flag_takes_value :: proc(flags: []Compiled_Flag, arg: string) -> bool {
     name = name[:idx]
   }
   for flag in flags {
-    if flag.mode != .Required do continue
+    if flag.mode == .None do continue
     if compiled_flag_name_matches(flag, name) do return true
   }
   return false
@@ -1027,6 +1186,42 @@ compiled_flag_takes_value :: proc(flags: []Compiled_Flag, arg: string) -> bool {
 compiled_flag_takes_value_in :: proc(flags, extra_flags: []Compiled_Flag, arg: string) -> bool {
   if compiled_flag_takes_value(flags, arg) do return true
   return compiled_flag_takes_value(extra_flags, arg)
+}
+
+compiled_flag_value_mode :: proc(flags: []Compiled_Flag, arg: string) -> (Flag_Value_Mode, bool) {
+  name := arg
+  if idx := strings.index(name, "="); idx >= 0 {
+    name = name[:idx]
+  }
+  for flag in flags {
+    if compiled_flag_name_matches(flag, name) do return flag.mode, true
+  }
+  return .None, false
+}
+
+compiled_flag_value_mode_in :: proc(flags, extra_flags: []Compiled_Flag, arg: string) -> (Flag_Value_Mode, bool) {
+  if mode, ok := compiled_flag_value_mode(flags, arg); ok {
+    return mode, true
+  }
+  return compiled_flag_value_mode(extra_flags, arg)
+}
+
+compiled_flag_consumes_next_arg_in :: proc(args: []string, idx: int, flags, extra_flags: []Compiled_Flag) -> bool {
+  if idx < 0 || idx >= len(args) do return false
+  arg := args[idx]
+  if strings.contains(arg, "=") do return false
+  if idx + 1 >= len(args) do return false
+  mode, ok := compiled_flag_value_mode_in(flags, extra_flags, arg)
+  if !ok do return false
+  switch mode {
+  case .Required:
+    return true
+  case .Optional:
+    return !is_option(args[idx + 1])
+  case .None:
+    return false
+  }
+  return false
 }
 
 flag_name_matches :: proc(flag: Flag_Spec, name: string) -> bool {
@@ -1047,6 +1242,23 @@ compiled_flag_name_matches :: proc(flag: Compiled_Flag, name: string) -> bool {
   return false
 }
 
+compiled_flag_value_allowed :: proc(flag: Compiled_Flag, value: string) -> bool {
+  for choice in flag.choices {
+    if value == choice do return true
+  }
+  return false
+}
+
+join_choice_values :: proc(choices: []string) -> string {
+  builder := strings.builder_make()
+  defer strings.builder_destroy(&builder)
+  for choice, i in choices {
+    if i > 0 do strings.write_string(&builder, ", ")
+    strings.write_string(&builder, choice)
+  }
+  return strings.clone(strings.to_string(builder))
+}
+
 positional :: proc(result: Match_Result, name: string) -> (string, bool) {
   for value in result.positionals {
     if value.name == name {
@@ -1054,6 +1266,16 @@ positional :: proc(result: Match_Result, name: string) -> (string, bool) {
     }
   }
   return strings.clone(""), false
+}
+
+positionals :: proc(result: Match_Result, name: string) -> [dynamic]string {
+  values := make([dynamic]string)
+  for value in result.positionals {
+    if value.name == name {
+      append(&values, strings.clone(value.value))
+    }
+  }
+  return values
 }
 
 option_value :: proc(args: []string, primary, secondary: string) -> string {

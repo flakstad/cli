@@ -59,6 +59,37 @@ test_completion_words_for_decl_prefix_use_slice_patterns :: proc(t: ^testing.T) 
 }
 
 @(test)
+test_completion_words_for_compiled_prefix_with_flags_includes_applicable_flags :: proc(t: ^testing.T) {
+  verbose_names := [?]string{"--verbose", "-v"}
+  format_names := [?]string{"--format"}
+  list_patterns := [?]string{"items list"}
+  show_patterns := [?]string{"items show <item-id>"}
+  show_flags := [?]Flag_Decl{
+    {names = format_names[:], mode = .Required},
+  }
+  global_flags := [?]Flag_Decl{
+    {names = verbose_names[:], mode = .None},
+  }
+  specs := [?]Command_Decl{
+    {patterns = list_patterns[:], id = "items.list"},
+    {patterns = show_patterns[:], id = "items.show", flags = show_flags[:]},
+  }
+  compiled := compile_cli_decls(specs[:], global_flags[:])
+  defer destroy_compiled_cli(compiled)
+
+  root := completion_words_for_compiled_prefix_with_flags(compiled, "", nil)
+  defer delete(root)
+  testing.expect(t, strings.contains(root, "items"))
+  testing.expect(t, strings.contains(root, "--verbose"))
+  testing.expect(t, strings.contains(root, "-v"))
+
+  show := completion_words_for_compiled_prefix_with_flags(compiled, "items show", nil)
+  defer delete(show)
+  testing.expect(t, strings.contains(show, "--verbose"))
+  testing.expect(t, strings.contains(show, "--format"))
+}
+
+@(test)
 test_render_completion_script_supports_bash :: proc(t: ^testing.T) {
   script := render_completion_script("ro", "bash", "items status")
   defer delete(script)

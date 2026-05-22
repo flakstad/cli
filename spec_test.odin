@@ -107,18 +107,25 @@ test_help_lines_for_flags_render_value_names_aliases_and_docs :: proc(t: ^testin
 test_help_lines_for_flag_decls_render_slice_names :: proc(t: ^testing.T) {
   format_names := [?]string{"--format", "-f"}
   pretty_names := [?]string{"--pretty"}
+  scan_names := [?]string{"--with-scan"}
+  profile_names := [?]string{"--profile"}
+  profile_choices := [?]string{"quick", "standard", "thorough"}
   flags := [?]Flag_Decl{
     {names = format_names[:], value_name = "text|json", mode = .Required, doc = "Select output format"},
     {names = pretty_names[:], mode = .None, doc = "Pretty-print output"},
+    {names = scan_names[:], value_name = "ALIAS", mode = .Optional, doc = "Run optional scan"},
+    {names = profile_names[:], mode = .Required, choices = profile_choices[:], doc = "Select profile"},
   }
 
   lines := help_lines_for_flag_decls(flags[:])
   defer destroy_help_lines(lines)
 
-  testing.expect_value(t, len(lines), 2)
+  testing.expect_value(t, len(lines), 4)
   testing.expect_value(t, lines[0].syntax, "--format text|json | -f text|json")
   testing.expect_value(t, lines[0].doc, "Select output format")
   testing.expect_value(t, lines[1].syntax, "--pretty")
+  testing.expect_value(t, lines[2].syntax, "--with-scan [ALIAS]")
+  testing.expect_value(t, lines[3].syntax, "--profile quick|standard|thorough")
 }
 
 @(test)
@@ -205,6 +212,7 @@ test_help_lines_for_subcommands_strip_prefix :: proc(t: ^testing.T) {
 test_help_lines_for_compiled_subcommands_render_token_kinds :: proc(t: ^testing.T) {
   specs := [?]Command_Spec{
     {path = "items show|get <item-id>", label = "items.show", shape = "items.show", doc = "Show one item"},
+    {path = "bench <args...>", label = "bench", shape = "bench", doc = "Forward benchmark args"},
     {path = "items audit", label = "items.audit", shape = "items.audit", doc = "Hidden docs row", help_only = true},
   }
   compiled := compile_cli(specs[:], nil)
@@ -218,6 +226,50 @@ test_help_lines_for_compiled_subcommands_render_token_kinds :: proc(t: ^testing.
   testing.expect_value(t, lines[0].doc, "Show one item")
   testing.expect_value(t, lines[1].syntax, "audit")
   testing.expect_value(t, lines[1].doc, "Hidden docs row")
+}
+
+@(test)
+test_command_usage_renders_variadic_positionals :: proc(t: ^testing.T) {
+  specs := [?]Command_Spec{
+    {path = "bench <args...>", label = "bench", shape = "bench", doc = "Forward benchmark args"},
+  }
+  compiled := compile_cli(specs[:], nil)
+  defer destroy_compiled_cli(compiled)
+
+  usage := command_usage_for_id("example", "bench", compiled)
+  defer delete(usage)
+
+  testing.expect_value(t, usage, "example bench <args...>")
+}
+
+@(test)
+test_render_compiled_command_help_for_key_uses_catalog_docs_flags_and_subcommands :: proc(t: ^testing.T) {
+  format_names := [?]string{"--format"}
+  probe_patterns := [?]string{"http probe"}
+  batch_patterns := [?]string{"http batch"}
+  probe_flags := [?]Flag_Decl{
+    {names = format_names[:], value_name = "text|json", mode = .Required, doc = "Output format"},
+  }
+  commands := [?]Command_Decl{
+    {patterns = probe_patterns[:], id = "http.probe", doc = "Probe one URL", flags = probe_flags[:]},
+    {patterns = batch_patterns[:], id = "http.batch", doc = "Probe URL list"},
+  }
+  docs := [?]Command_Doc{
+    {key = "http", usage = "example http <subcommand>", doc = "HTTP commands."},
+    {key = "http.probe", usage = "example http probe [flags]", doc = "Probe one URL."},
+  }
+  compiled := compile_cli_decls(commands[:], nil)
+  defer destroy_compiled_cli(compiled)
+
+  group := render_compiled_command_help_for_key("example", "http", "http", compiled, docs[:])
+  defer delete(group)
+  testing.expect(t, strings.contains(group, "NAME\n  http - HTTP commands."))
+  testing.expect(t, strings.contains(group, "SUBCOMMANDS\n  probe"))
+
+  probe := render_compiled_command_help_for_key("example", "http.probe", "http probe", compiled, docs[:])
+  defer delete(probe)
+  testing.expect(t, strings.contains(probe, "NAME\n  http.probe - Probe one URL."))
+  testing.expect(t, strings.contains(probe, "FLAGS\n  --format text|json"))
 }
 
 @(test)

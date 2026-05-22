@@ -21,6 +21,12 @@ completion_words_for_compiled_prefix :: proc(compiled: Compiled_CLI, prefix: str
   return join_words(words[:])
 }
 
+completion_words_for_compiled_prefix_with_flags :: proc(compiled: Compiled_CLI, prefix: string, extra_words: []string) -> string {
+  words := completion_word_list_for_compiled_prefix_with_flags(compiled, prefix, extra_words)
+  defer destroy_string_words(words)
+  return join_words(words[:])
+}
+
 completion_word_list_for_compiled_prefix :: proc(compiled: Compiled_CLI, prefix: string, extra_words: []string) -> [dynamic]string {
   words := make([dynamic]string)
   prefix_tokens := strings.fields(prefix)
@@ -36,6 +42,16 @@ completion_word_list_for_compiled_prefix :: proc(compiled: Compiled_CLI, prefix:
   for word in extra_words {
     append_unique_word(&words, strings.trim_space(word))
   }
+  return words
+}
+
+completion_word_list_for_compiled_prefix_with_flags :: proc(compiled: Compiled_CLI, prefix: string, extra_words: []string) -> [dynamic]string {
+  words := completion_word_list_for_compiled_prefix(compiled, prefix, extra_words)
+  append_completion_words_for_flags(&words, compiled.flags[:])
+
+  prefix_tokens := strings.fields(prefix)
+  defer delete(prefix_tokens)
+  append_completion_words_for_matching_command_flags(&words, compiled, prefix_tokens[:])
   return words
 }
 
@@ -83,6 +99,26 @@ render_completion_script :: proc(command_name, shell, top_words: string) -> stri
   return strings.clone("")
 }
 
+append_completion_words_for_flags :: proc(words: ^[dynamic]string, flags: []Compiled_Flag) {
+  for flag in flags {
+    for name in flag.names {
+      append_unique_word(words, strings.trim_space(name))
+    }
+  }
+}
+
+append_completion_words_for_matching_command_flags :: proc(words: ^[dynamic]string, compiled: Compiled_CLI, prefix_tokens: []string) {
+  for command in compiled.commands {
+    if command.help_only do continue
+    for pattern in command.patterns {
+      if compiled_tokens_have_literal_prefix(pattern.tokens[:], prefix_tokens) {
+	append_completion_words_for_flags(words, command.flags[:])
+	break
+      }
+    }
+  }
+}
+
 append_completion_words_for_compiled_pattern :: proc(words: ^[dynamic]string, pattern: Command_Pattern, prefix_tokens: []string) {
   if len(pattern.tokens) <= len(prefix_tokens) do return
   if !compiled_tokens_have_literal_prefix(pattern.tokens[:], prefix_tokens) do return
@@ -98,7 +134,7 @@ compiled_tokens_have_literal_prefix :: proc(tokens: []Command_Token, prefix_toke
       if token.text != prefix do return false
     case .One_Of:
       if !compiled_token_choice_matches(token, prefix) do return false
-    case .Positional:
+    case .Positional, .Variadic_Positional:
       return false
     }
   }
@@ -113,7 +149,7 @@ append_completion_compiled_token :: proc(words: ^[dynamic]string, token: Command
     for choice in token.choices {
       append_unique_word(words, strings.trim_space(choice))
     }
-  case .Positional:
+  case .Positional, .Variadic_Positional:
   }
 }
 

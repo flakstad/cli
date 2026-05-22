@@ -171,6 +171,37 @@ command_usage_for_id :: proc(command_name, id: string, compiled: Compiled_CLI) -
   return strings.clone("")
 }
 
+compiled_command_for_id :: proc(compiled: Compiled_CLI, id: string) -> (Compiled_Command, bool) {
+  for command in compiled.commands {
+    if command.id == id do return command, true
+  }
+  return Compiled_Command{}, false
+}
+
+help_lines_for_compiled_command_flags :: proc(compiled: Compiled_CLI, id: string) -> [dynamic]Help_Line {
+  command, ok := compiled_command_for_id(compiled, id)
+  if !ok do return nil
+  return help_lines_for_compiled_flags(command.flags[:])
+}
+
+render_compiled_command_help_for_key :: proc(command_name, key, prefix: string, compiled: Compiled_CLI, docs: []Command_Doc) -> string {
+  doc, ok := command_doc_for_key(docs, key)
+  if !ok do return strings.clone("")
+
+  usage := ""
+  if strings.trim_space(doc.usage) == "" {
+    usage = command_usage_for_id(command_name, key, compiled)
+    defer delete(usage)
+    doc.usage = usage
+  }
+
+  subcommands := help_lines_for_compiled_subcommands(compiled, prefix)
+  defer destroy_help_lines(subcommands)
+  flags := help_lines_for_compiled_command_flags(compiled, key)
+  defer destroy_help_lines(flags)
+  return render_command_help(doc, subcommands[:], flags[:])
+}
+
 command_usage_for_decl_id :: proc(command_name, id: string, commands: []Command_Decl, flags: []Flag_Decl) -> string {
   compiled := compile_cli_decls(commands, flags)
   defer destroy_compiled_cli(compiled)
@@ -259,6 +290,8 @@ write_compiled_token_syntax :: proc(builder: ^strings.Builder, token: Command_To
     strings.write_string(builder, token.text)
   case .Positional:
     fmt.sbprintf(builder, "<%s>", token.text)
+  case .Variadic_Positional:
+    fmt.sbprintf(builder, "<%s...>", token.text)
   case .One_Of:
     for choice, i in token.choices {
       if i > 0 do strings.write_byte(builder, '|')
@@ -282,11 +315,13 @@ write_flag_usage :: proc(builder: ^strings.Builder, flag: Compiled_Flag) {
     name = flag.names[0]
   }
   strings.write_string(builder, name)
-  if flag.mode == .Required {
-    value := strings.trim_space(flag.value_name)
-    if value == "" do value = "VALUE"
+  if flag.mode == .Required || flag.mode == .Optional {
+    value := compiled_flag_display_value_name(flag)
+    defer delete(value)
     strings.write_byte(builder, ' ')
+    if flag.mode == .Optional do strings.write_byte(builder, '[')
     strings.write_string(builder, value)
+    if flag.mode == .Optional do strings.write_byte(builder, ']')
   }
 }
 
@@ -306,19 +341,40 @@ compiled_flag_help_syntax :: proc(flag: Compiled_Flag) -> string {
   defer strings.builder_destroy(&builder)
   for name, i in flag.names {
     if i > 0 do strings.write_string(&builder, " | ")
-    append_flag_name_for_help(&builder, name, flag.value_name, flag.mode)
+    value_name := compiled_flag_display_value_name(flag)
+    append_flag_name_for_help(&builder, name, value_name, flag.mode)
+    delete(value_name)
   }
   return strings.clone(strings.to_string(builder))
 }
 
 append_flag_name_for_help :: proc(builder: ^strings.Builder, name, value_name: string, mode: Flag_Value_Mode) {
   strings.write_string(builder, name)
-  if mode == .Required {
+  if mode == .Required || mode == .Optional {
     value := strings.trim_space(value_name)
     if value == "" do value = "VALUE"
     strings.write_byte(builder, ' ')
+    if mode == .Optional do strings.write_byte(builder, '[')
     strings.write_string(builder, value)
+    if mode == .Optional do strings.write_byte(builder, ']')
   }
+}
+
+compiled_flag_display_value_name :: proc(flag: Compiled_Flag) -> string {
+  value := strings.trim_space(flag.value_name)
+  if value != "" do return strings.clone(value)
+  if len(flag.choices) > 0 do return join_display_choices(flag.choices[:])
+  return strings.clone("VALUE")
+}
+
+join_display_choices :: proc(choices: []string) -> string {
+  builder := strings.builder_make()
+  defer strings.builder_destroy(&builder)
+  for choice, i in choices {
+    if i > 0 do strings.write_byte(&builder, '|')
+    strings.write_string(&builder, choice)
+  }
+  return strings.clone(strings.to_string(builder))
 }
 
 render_root_help :: proc(spec: Root_Spec) -> string {

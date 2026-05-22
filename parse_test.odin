@@ -414,6 +414,105 @@ test_parse_flag_decls_returns_canonical_flags_and_rest :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_combine_flag_decls_appends_reusable_groups :: proc(t: ^testing.T) {
+  format_names := [?]string{"--format"}
+  pretty_names := [?]string{"--pretty"}
+  output_flags := [?]Flag_Decl{
+    {names = format_names[:], mode = .Required},
+  }
+  display_flags := [?]Flag_Decl{
+    {names = pretty_names[:], mode = .None},
+  }
+
+  flags := combine_flag_decls(output_flags[:], display_flags[:])
+  defer destroy_flag_decl_list(flags)
+
+  testing.expect_value(t, len(flags), 2)
+  testing.expect_value(t, flags[0].names[0], "--format")
+  testing.expect_value(t, flags[1].names[0], "--pretty")
+}
+
+@(test)
+test_parse_flags_support_optional_values_repeated_values_and_defaults :: proc(t: ^testing.T) {
+  scan_names := [?]string{"--with-scan"}
+  header_names := [?]string{"--header"}
+  limit_names := [?]string{"--limit"}
+  flags := [?]Flag_Decl{
+    {names = scan_names[:], mode = .Optional},
+    {names = header_names[:], mode = .Required},
+    {names = limit_names[:], mode = .Required},
+  }
+  args := [?]string{"--with-scan", "baseline", "--with-scan", "--header", "A: 1", "--header=B: 2", "--limit", "25", "http", "scan"}
+
+  result := parse_flag_decls(args[:], flags[:])
+  defer destroy_flag_parse_result(result)
+
+  testing.expect(t, result.ok)
+  testing.expect_value(t, len(result.flags), 5)
+  testing.expect_value(t, result.flags[0].name, "--with-scan")
+  testing.expect(t, result.flags[0].has_value)
+  testing.expect_value(t, result.flags[0].value, "baseline")
+  testing.expect_value(t, result.flags[1].name, "--with-scan")
+  testing.expect(t, !result.flags[1].has_value)
+  testing.expect_value(t, parsed_flag_int_value_or(result, "--limit", 10), 25)
+  testing.expect_value(t, parsed_flag_int_value_or(result, "--missing", 10), 10)
+
+  scan := parsed_flag_value_or(result, "--with-scan", "default")
+  defer delete(scan)
+  testing.expect_value(t, scan, "baseline")
+
+  headers := parsed_flag_values(result, "--header")
+  defer destroy_string_list(headers)
+  testing.expect_value(t, len(headers), 2)
+  testing.expect_value(t, headers[0], "A: 1")
+  testing.expect_value(t, headers[1], "B: 2")
+
+  testing.expect_value(t, len(result.rest), 2)
+  testing.expect_value(t, result.rest[0], "http")
+  testing.expect_value(t, result.rest[1], "scan")
+}
+
+@(test)
+test_parse_flags_validate_declared_choices :: proc(t: ^testing.T) {
+  format_names := [?]string{"--format"}
+  choices := [?]string{"text", "json"}
+  flags := [?]Flag_Decl{
+    {names = format_names[:], mode = .Required, choices = choices[:]},
+  }
+
+  ok_args := [?]string{"--format", "json"}
+  ok := parse_flag_decls(ok_args[:], flags[:])
+  defer destroy_flag_parse_result(ok)
+  testing.expect(t, ok.ok)
+
+  bad_args := [?]string{"--format", "xml"}
+  bad := parse_flag_decls(bad_args[:], flags[:])
+  defer destroy_flag_parse_result(bad)
+  testing.expect(t, !bad.ok)
+  testing.expect_value(t, bad.error, "--format must be one of: text, json")
+}
+
+@(test)
+test_optional_flag_does_not_consume_following_option :: proc(t: ^testing.T) {
+  scan_names := [?]string{"--with-scan"}
+  pretty_names := [?]string{"--pretty"}
+  flags := [?]Flag_Decl{
+    {names = scan_names[:], mode = .Optional},
+    {names = pretty_names[:], mode = .None},
+  }
+  args := [?]string{"--with-scan", "--pretty"}
+
+  result := parse_flag_decls(args[:], flags[:])
+  defer destroy_flag_parse_result(result)
+
+  testing.expect(t, result.ok)
+  testing.expect_value(t, len(result.flags), 2)
+  testing.expect_value(t, result.flags[0].name, "--with-scan")
+  testing.expect(t, !result.flags[0].has_value)
+  testing.expect(t, parsed_flag_present(result, "--pretty"))
+}
+
+@(test)
 test_parse_flags_can_stop_at_first_positional :: proc(t: ^testing.T) {
   flags := [?]Flag_Spec{
     {name = "--db", mode = .Required},
@@ -431,6 +530,39 @@ test_parse_flags_can_stop_at_first_positional :: proc(t: ^testing.T) {
   testing.expect_value(t, result.rest[0], "items")
   testing.expect_value(t, result.rest[1], "--title")
   testing.expect_value(t, result.rest[2], "Keep me")
+}
+
+@(test)
+test_split_passthrough_args_returns_original_slices :: proc(t: ^testing.T) {
+  args := [?]string{"http", "scan", "--url", "https://example.com", "--", "-tags", "tech"}
+
+  parsed, passthrough := split_passthrough_args(args[:])
+
+  testing.expect_value(t, len(parsed), 4)
+  testing.expect_value(t, parsed[0], "http")
+  testing.expect_value(t, parsed[3], "https://example.com")
+  testing.expect_value(t, len(passthrough), 2)
+  testing.expect_value(t, passthrough[0], "-tags")
+  testing.expect_value(t, passthrough[1], "tech")
+}
+
+@(test)
+test_parse_flags_return_passthrough_after_double_dash :: proc(t: ^testing.T) {
+  url_names := [?]string{"--url"}
+  flags := [?]Flag_Decl{
+    {names = url_names[:], mode = .Required},
+  }
+  args := [?]string{"--url", "https://example.com", "scan", "--", "-tags", "tech"}
+
+  result := parse_flag_decls(args[:], flags[:])
+  defer destroy_flag_parse_result(result)
+
+  testing.expect(t, result.ok)
+  testing.expect_value(t, len(result.rest), 1)
+  testing.expect_value(t, result.rest[0], "scan")
+  testing.expect_value(t, len(result.passthrough), 2)
+  testing.expect_value(t, result.passthrough[0], "-tags")
+  testing.expect_value(t, result.passthrough[1], "tech")
 }
 
 @(test)
@@ -457,6 +589,26 @@ test_parse_flags_reports_unknown_missing_and_unwanted_values :: proc(t: ^testing
   defer destroy_flag_parse_result(unwanted)
   testing.expect(t, !unwanted.ok)
   testing.expect_value(t, unwanted.error, "flag does not take a value: --pretty")
+}
+
+@(test)
+test_match_command_supports_variadic_positionals :: proc(t: ^testing.T) {
+  specs := [?]Command_Spec{
+    {path = "bench <args...>", label = "bench", shape = "bench"},
+  }
+  args := [?]string{"bench", "--warmup", "3", "bin/gransk repo stats --dir ."}
+
+  match := match_command(specs[:], args[:])
+  defer destroy_match_result(match)
+
+  testing.expect(t, match.ok)
+  testing.expect_value(t, match.args_consumed, 4)
+  values := positionals(match, "args")
+  defer destroy_string_list(values)
+  testing.expect_value(t, len(values), 3)
+  testing.expect_value(t, values[0], "--warmup")
+  testing.expect_value(t, values[1], "3")
+  testing.expect_value(t, values[2], "bin/gransk repo stats --dir .")
 }
 
 @(test)
@@ -495,6 +647,29 @@ test_parse_command_returns_match_flags_and_rest :: proc(t: ^testing.T) {
   testing.expect(t, format_ok)
   testing.expect_value(t, format, "json")
   testing.expect(t, parsed_command_flag_present(result, "--pretty"))
+}
+
+@(test)
+test_parse_command_supports_command_specific_unknown_flags :: proc(t: ^testing.T) {
+  wrapper_patterns := [?]string{"repo scc <args...>"}
+  strict_patterns := [?]string{"repo stats"}
+  specs := [?]Command_Decl{
+    {patterns = wrapper_patterns[:], id = "repo.scc", allow_unknown_flags = true},
+    {patterns = strict_patterns[:], id = "repo.stats"},
+  }
+
+  wrapper_args := [?]string{"repo", "scc", "--by-file", "src"}
+  wrapper := parse_command_decls(wrapper_args[:], specs[:], nil)
+  defer destroy_command_parse_result(wrapper)
+  testing.expect(t, wrapper.ok)
+  testing.expect_value(t, wrapper.match.id, "repo.scc")
+  testing.expect_value(t, len(wrapper.rest), 4)
+
+  strict_args := [?]string{"repo", "stats", "--by-file"}
+  strict := parse_command_decls(strict_args[:], specs[:], nil)
+  defer destroy_command_parse_result(strict)
+  testing.expect(t, !strict.ok)
+  testing.expect_value(t, strict.error, "unknown flag: --by-file")
 }
 
 @(test)
